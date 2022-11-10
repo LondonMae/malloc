@@ -1,0 +1,8 @@
+*.o
+*.so
+src/sizes
+src/basic_allocs_test
+src/run-with
+src/gdb_init_script
+src/tests/*-test
+

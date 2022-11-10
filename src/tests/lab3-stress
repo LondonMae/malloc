@@ -1,0 +1,5 @@
+#!/bin/bash
+
+
+# give this larger regions or it will take a while to run...
+../run-with -s 0xbf -r 32768 -e "./bins/lab3-st -r 50 -i 4 -s 256 -k 2048 -m 4"

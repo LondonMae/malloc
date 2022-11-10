@@ -1,0 +1,4 @@
+#!/bin/sh
+
+# give this larger regions or it will take a while to run...
+../run-with -s 0xbf -r 32768 -e "./bins/lab3-wc -f data/ulysses.txt -d -s 4096 | tail"

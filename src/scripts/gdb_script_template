@@ -1,0 +1,29 @@
+# the following are examples of how to initialize environment variables used by
+# the allocator. uncomment and change to your desired value
+# set environment MALLOC_SCRIBBLE 0xbf 
+# set environment MAX_BLOCK_ALLOC_ENV_VAR 1024
+# set environment REGION_SIZE_ENV_VAR 8192
+
+# the following will use your allocator for any program you start within gdb.
+# commit it out if you are debugging a test program that uses your allocator
+# explicitly, or uncomment it if you want to run a program with your allocator
+# taking the place of malloc.
+# set exec-wrapper env 'LD_PRELOAD=XXX/lynx_alloc_shared.so' 
+
+# convenience function to print the regions of your allocator.
+# call it with:
+#  (gdb) print_regions
+define print_regions
+  set $tmp = root
+  while $tmp
+    print *$tmp
+    set $tmp = $tmp->next
+  end
+end
+
+# convenience function to print counters in the allocator
+# call it with:
+#  (gdb) print_counters
+define print_counters
+  print counters
+end

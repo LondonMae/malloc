@@ -1,0 +1,4 @@
+theme: minima
+title: COMP251 Lab 5 - Implementing a memory allocator
+description: COMP251 Lab 5 Handout
+markdown: kramdown
