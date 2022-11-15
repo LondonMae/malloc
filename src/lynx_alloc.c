@@ -439,14 +439,47 @@ block_t *merge_left(block_t *blk) {
   // our boundary condition is the intro block. the intro block is a real
   // block of size 16 and is always used.
   // TODO: Implement this function.
-  return blk;
+
+  block_t *prev_metadata = prev_block(blk);
+
+  // returns pointer if previous block is not free
+  if (!is_free(prev_metadata)) {
+    return blk;
+  }
+
+  size_t new_size = block_size(prev_metadata) + block_size(blk);
+  *prev_metadata = new_size;
+  block_t *ftr = block_ftr(blk);
+  *ftr = new_size;
+
+  mark_block_free(prev_metadata);
+
+  to_region(blk)->n_free -= 1;
+
+  return merge_left(prev_metadata);
 }
 
 block_t *merge_right(block_t *blk) {
   // attempt to merge this block with the block to its right. return the new
   // merged block (which should always be this block).
   // TODO: Implement this function.
-  return blk;
+
+  block_t *next_metadata = block_next(blk);
+  if (!is_free(next_metadata)) {
+    return blk;
+  }
+
+  size_t new_size = block_size(next_metadata) + block_size(blk);
+  block_t *next_ftr = block_ftr(next_metadata);
+
+  *next_ftr = new_size;
+  *blk = new_size;
+
+  mark_block_free(blk);
+
+  to_region(blk)->n_free -= 1;
+
+  return merge_right(blk);
 }
 
 void merge(block_t *blk) {
@@ -461,6 +494,39 @@ void split(block_t *blk, size_t size) {
   // Given a free block and a desired size, determine whether to split the
   // block.
   // TODO: Implement this function.
+
+  size += RESERVE_CAPACITY;
+
+  // do not split if remaining size is smaller than min sie
+  if (block_size(blk) - size < config.min_split_size) {
+    return;
+  }
+
+  // set first header metadata to size
+  // set first footer metadata to size
+  // set second header and fiiter to block size - size
+
+  // size of free block
+  size_t free_size = block_size(blk) - size;
+
+  // set used block to desired size and mark used
+  *blk = size;
+  block_t *ftr = block_ftr(blk);
+  *ftr = size;
+  mark_block_used(blk);
+
+  block_t *next = block_next(blk);
+  // set next block to space allocated - space desired
+  // mark block as free
+  *next = free_size;
+  block_t *next_f = block_ftr(next);
+  *next_f = free_size;
+  mark_block_free(next);
+
+  // DEBUG
+
+  // goes from one free block to one free and one used block
+  to_region(next)->n_free += 1;
 }
 
 // --------------- Malloc impl functions ---------------
@@ -473,7 +539,59 @@ void *lynx_malloc(size_t size) {
   }
 
   // TODO: Implement this function.
-  return NULL;
+
+  if (size == 0) {
+    // returns null if requested size is 0
+    return NULL;
+  }
+
+  if (size > config.max_block_size) {
+    // allocates large block if more than max block siz
+    counters.large_block_allocs += 1;
+    return block_data(create_large_block(size));
+  }
+
+  size = next16(size);
+
+  block_t *next_free_blk = next_free(size);
+  if (next_free_blk == NULL) {
+    // attemp to create new region if no free blocks available
+    if (root == NULL) {
+      root = region_create();
+    } else {
+      region_t *next = root;
+      root = region_create();
+      next->prev = root;
+      root->next = next;
+    }
+    if (root == NULL) {
+      return NULL;
+    }
+    // try free block again after creating region
+    next_free_blk = next_free(size);
+  }
+
+  block_t *ftr = block_ftr(next_free_blk);
+  *ftr = block_size(next_free_blk);
+
+  // if block allocated is bigger then requested, attemp to split
+  if (block_size(next_free_blk) > size) {
+    split(next_free_blk, size);
+  }
+
+  mark_block_used(next_free_blk);
+
+  if (config.scribble_char) {
+    scribble_block(next_free_blk);
+  }
+
+  to_region(next_free_blk)->n_free -= 1;
+  to_region(next_free_blk)->n_used += 1;
+  counters.total_allocs += 1;
+
+  // check the scribble stuff? (idk what that is)
+
+  return block_data(next_free_blk);
 }
 
 // FREE
@@ -577,11 +695,11 @@ struct malloc_config lynx_alloc_config() {
 }
 
 // Warning: calling these print functions from a program that uses this as its
-// allocator implementation will result in calls to this allocator (printf uses
-// malloc).
+// allocator implementation will result in calls to this allocator (printf
+// uses malloc).
 //
-// This is fine unless you are debugging this allocator, in which case counters
-// and assertions should be used for instrumentation.
+// This is fine unless you are debugging this allocator, in which case
+// counters and assertions should be used for instrumentation.
 void print_block(block_t *block) {
   // print a block's metadata
   printf("\t\t [%p - %p] (size %4zu) status: %s\n", block_data(block),
