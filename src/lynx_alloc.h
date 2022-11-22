@@ -87,11 +87,12 @@ typedef struct region region_t;
 struct region {
   block_t *block_list; // free list for region; should be directly after
                        // null_header
-  region_t *next;      // next region
-  region_t *prev;      // prev region; optimization for cleaning up free regions
-  uint32_t n_free;     // number of free blocks in the region
-  uint32_t n_used;     // number of used blocks in the region (ignoring
-                       // intro/outro)
+  block_t *start;
+  region_t *next;  // next region
+  region_t *prev;  // prev region; optimization for cleaning up free regions
+  uint32_t n_free; // number of free blocks in the region
+  uint32_t n_used; // number of used blocks in the region (ignoring
+                   // intro/outro)
 };
 
 // Tuning parameters.
@@ -120,6 +121,12 @@ struct malloc_counters {
   // large block counters
   uint64_t large_block_allocs;
   uint64_t large_block_frees;
+  // performance counters
+  uint64_t blocks_checked;
+  uint64_t check_amount;
+  uint64_t bytes_used;
+  uint64_t bytes_unused;
+  float peak_utilization;
 };
 
 // The  malloc()  function  allocates size bytes and returns a pointer to the

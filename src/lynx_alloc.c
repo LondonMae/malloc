@@ -73,7 +73,7 @@ void free_large_block(block_t *blk);
 // Find free blocks as well as split and merge blocks.
 block_t *next_free(size_t desired);
 void split(block_t *blk, size_t size);
-void merge(block_t *blk);
+block_t *merge(block_t *blk);
 block_t *merge_left(block_t *blk);
 block_t *merge_right(block_t *blk);
 
@@ -267,7 +267,9 @@ void free_large_block(block_t *blk) {
 void scribble_block(block_t *blk) {
   size_t size = block_size(blk);
   char *data = block_data(blk);
-  memset(data, config.scribble_char, size - 2 * sizeof(block_t));
+  size_t scribble_distance =
+      is_large(blk) ? size - 16 : size - 2 * sizeof(block_t);
+  memset(data, config.scribble_char, scribble_distance);
 }
 
 region_t *region_create() {
@@ -348,8 +350,7 @@ region_t *region_create() {
   *block_ftr(blk) = blk_size;
   mark_block_used(blk);
 
-  // finish initialization of region.
-  tmp->block_list = blk;
+  tmp->start = blk;
 
   // write next block and mark it free.
   blk = to_block(next_data);
@@ -361,11 +362,25 @@ region_t *region_create() {
   *block_ftr(blk) = blk_size;
   mark_block_free(blk); // should be a no-op, but let's be explicit.
 
+  // finish initialization of region.
+  tmp->block_list = blk;
+  block_t **next_ptr = block_data(blk);
+  block_t **prev_ptr = next_ptr + sizeof(block_t *);
+  *next_ptr = 0;
+  *prev_ptr = 0;
+
   // write last block and mark it used.
   blk = block_next(blk); // header of next block
   *blk = 1;              // block is size 0 and used
 
   counters.region_allocs += 1;
+  counters.bytes_unused += (config.region_size);
+
+  counters.peak_utilization =
+      ((float)counters.bytes_used / counters.bytes_unused) >
+              counters.peak_utilization
+          ? ((float)counters.bytes_used / counters.bytes_unused)
+          : counters.peak_utilization;
 
   return tmp;
 }
@@ -397,10 +412,21 @@ void clean_regions(block_t *last_blk) {
   counters.region_frees += 1;
 }
 
+block_t *get_next_free(block_t *blk) {
+  block_t **next_ptr = block_data(blk);
+  return *next_ptr;
+}
+
+block_t *get_prev_free(block_t *blk) {
+  block_t **prev_ptr = block_data(blk) + sizeof(block_t *);
+  return *prev_ptr;
+}
+
 block_t *next_free(size_t desired) {
   // find the next free block
   region_t *cur = root;
   block_t *ret = NULL;
+
   while (1) {
     // find the next region with at least one free block
     while (cur && cur->n_free < 1) {
@@ -411,28 +437,50 @@ block_t *next_free(size_t desired) {
       ret = NULL;
       break;
     }
+
+    print_region_info(cur, /*print_blocks=*/1);
+
+    // performance tracking
+    counters.check_amount += 1;
+
     // find free block in region
     block_t *blk = cur->block_list;
-    while (is_used(blk) || block_size(blk) < desired) {
-      block_t *new_blk = block_next(blk);
-      if (new_blk == blk) {
+
+    printf("in next free\n");
+    block_t *curr = blk;
+    while (get_next_free(curr) != 0) {
+      print_block(curr);
+      curr = get_next_free(curr);
+    }
+    print_block(curr);
+
+    printf("\n");
+
+    while (blk != 0 && block_size(blk) < desired) {
+      print_block(blk);
+      block_t *new_blk = get_next_free(blk);
+      printf("dbigging\n");
+      counters.blocks_checked += 1;
+      if (new_blk == 0) {
         // we reached the end of the region; there are no free blocks that fit
         // the alloc request. break out and try the next region.
         break;
       }
+      printf("DEBUG MOVE LOOP\n");
       blk = new_blk;
+      print_block(blk);
     }
     if (block_size(blk) >= desired) {
       // block found, we're done.
       ret = blk;
       break;
     }
+    printf("DEBUG TRYING NEW REGION\n");
     // try next region
     cur = cur->next;
   }
   return ret;
 }
-
 block_t *merge_left(block_t *blk) {
   // attempt to merge this block with the block to its left. if successful,
   // return the newly merged block.
@@ -482,12 +530,15 @@ block_t *merge_right(block_t *blk) {
   return merge_right(blk);
 }
 
-void merge(block_t *blk) {
+block_t *merge(block_t *blk) {
   // recursively merge blocks.
   // 1. Check previous -- merge.
   blk = merge_left(blk);
   // 2. Check following -- merge.
   blk = merge_right(blk);
+
+  printf("in merge: %lu\n", (uint64_t)blk);
+  return blk;
 }
 
 void split(block_t *blk, size_t size) {
@@ -571,15 +622,86 @@ void *lynx_malloc(size_t size) {
     next_free_blk = next_free(size);
   }
 
+  block_t *cur = to_region(next_free_blk)->block_list;
+  while (get_next_free(cur) != 0) {
+    print_block(cur);
+    cur = get_next_free(cur);
+  }
+  print_block(cur);
+
+  printf("\n");
+  printf("debig malloc\n");
+  print_block_list(to_region(next_free_blk)->start);
+  printf("debugging free list\n");
+
+  printf("%lu\n", (uint64_t)next_free_blk);
+
   block_t *ftr = block_ftr(next_free_blk);
   *ftr = block_size(next_free_blk);
+
+  // what are the prev and cur blocks of the blocks we are freeing
+  block_t *next = get_next_free(next_free_blk);
+  block_t *prev = get_prev_free(next_free_blk);
+
+  printf("next %lu\n", (uint64_t)next);
+  printf("prev %lu\n", (uint64_t)prev);
+
+  // what is the previous blocks next pointer
+  block_t **prev_next = block_data(prev);
+  // what is the next blocks previous pointer
+  block_t **next_prev = block_data(next) + sizeof(block_t *);
 
   // if block allocated is bigger then requested, attemp to split
   if (block_size(next_free_blk) > size) {
     split(next_free_blk, size);
   }
 
+  printf("used block: \n");
+  print_block(next_free_blk);
+  printf("\n");
+
   mark_block_used(next_free_blk);
+
+  // if successful split, set new free block pointers
+  block_t *new_free = block_next(next_free_blk);
+  if (is_free(new_free)) {
+    if (to_region(next_free_blk)->block_list == next_free_blk) {
+      to_region(next_free_blk)->block_list = new_free;
+    }
+
+    if (prev != 0) {
+      *prev_next = new_free;
+    }
+    if (next != 0) {
+      *next_prev = new_free;
+    }
+
+    block_t **new_next = block_data(new_free);
+    block_t **new_prev = block_data(new_free) + sizeof(block_t *);
+
+    *new_next = next;
+    *new_prev = prev;
+  }
+
+  else {
+    printf("in else\n");
+    block_t *new_root = next;
+    printf("%lu\n", (uint64_t)new_root);
+
+    if (to_region(next_free_blk)->block_list == next_free_blk) {
+      to_region(next_free_blk)->block_list = new_root;
+    }
+    if (prev != 0) {
+      *prev_next = next;
+    }
+    if (next != 0) {
+      *next_prev = prev;
+    }
+    if (new_root != 0) {
+      block_t **new_prev = block_data(new_root) + sizeof(block_t *);
+      *new_prev = 0;
+    }
+  }
 
   if (config.scribble_char) {
     scribble_block(next_free_blk);
@@ -588,6 +710,15 @@ void *lynx_malloc(size_t size) {
   to_region(next_free_blk)->n_free -= 1;
   to_region(next_free_blk)->n_used += 1;
   counters.total_allocs += 1;
+
+  counters.bytes_used += block_size(next_free_blk);
+  counters.bytes_unused -= block_size(next_free_blk);
+
+  counters.peak_utilization =
+      ((float)counters.bytes_used / (float)counters.bytes_unused) >
+              counters.peak_utilization
+          ? ((float)counters.bytes_used / counters.bytes_unused)
+          : counters.peak_utilization;
 
   // check the scribble stuff? (idk what that is)
 
@@ -612,6 +743,14 @@ void lynx_free(void *ptr) {
 
   assert(is_used(blk));
 
+  counters.bytes_used -= block_size(blk);
+  counters.bytes_unused += block_size(blk);
+  counters.peak_utilization =
+      ((float)counters.bytes_used / counters.bytes_unused) >
+              counters.peak_utilization
+          ? ((float)counters.bytes_used / counters.bytes_unused)
+          : counters.peak_utilization;
+
   // free the block before trying to merge it with neighbors.
   mark_block_free(blk);
 
@@ -621,7 +760,39 @@ void lynx_free(void *ptr) {
   counters.total_frees += 1;
 
   // try to merge free space
-  merge(blk);
+  blk = merge(blk);
+  block_t *last_root = to_region(blk)->block_list;
+  block_t **new_next = block_data(blk);
+  *new_next = last_root;
+
+  printf("debugging free\n");
+
+  if (last_root != 0) {
+    block_t **root_prev_ptr = block_data(last_root) + sizeof(block_t *);
+    *root_prev_ptr = blk;
+  }
+
+  block_t **block_prev_ptr = block_data(blk) + sizeof(block_t *);
+
+  *block_prev_ptr = 0;
+
+  if (last_root != blk) {
+    to_region(blk)->block_list = blk;
+  }
+  printf("%lu\n", (uint64_t)to_region(blk)->block_list);
+  block_t **test = block_data(blk);
+  printf("%lu\n", (uint64_t)*test);
+  printf("%lu\n", (uint64_t)*new_next);
+
+  print_block_list(to_region(blk)->start);
+
+  block_t *cur = to_region(blk)->block_list;
+  while (get_next_free(cur) != 0) {
+    // print_block(cur);
+    cur = get_next_free(cur);
+  }
+
+  print_block(cur);
 
   // try to clean up blocks
   clean_regions(blk);
@@ -722,7 +893,7 @@ void print_region_info(region_t *region, int print_blocks) {
   printf("\tn_free: %d\n", region->n_free);
   printf("\tblock_list:\n");
   if (print_blocks) {
-    print_block_list(region->block_list);
+    print_block_list(region->start);
   }
 }
 
@@ -749,6 +920,12 @@ void print_lynx_alloc_debug_info() {
     DUMP_VAR(counters.total_frees);
     DUMP_VAR(counters.large_block_allocs);
     DUMP_VAR(counters.large_block_frees);
+    DUMP_VAR(counters.check_amount == 0
+                 ? 0
+                 : counters.blocks_checked / counters.check_amount);
+    DUMP_VAR(counters.bytes_used);
+    DUMP_VAR(counters.bytes_unused);
+    printf("peak util: %.2f\n", counters.peak_utilization);
   } else {
     printf("Uninitialized.\n");
   }
